@@ -1,0 +1,258 @@
+\documentclass[11pt,twoside,a4paper]{article}
+\usepackage{mymla}
+\usepackage[colorlinks=false, pdftitle={Zhihao Yuan's GSoC2011 Report}, pdfauthor={Zhihao Yuan}]{hyperref}
+\usepackage{graphicx}
+\pagestyle{headings}
+\linespread{1.3}
+
+\newcommand{\fig}[3]{
+	\begin{center}
+	\includegraphics[scale=#3]{#2}\\
+	\texttt{\small{Fig. #1}}
+	\end{center}}
+
+\begin{document}
+\begin{mla}
+	{Zhihao}{Yuan}
+	{McIntire}
+	{CSCI-297}
+	{\today}
+	{Summer Internship Report}
+\setlength{\parindent}{0em}
+
+\section*{Abstract}
+
+During this summer, I participated in the Google Summer of Code 2011, and I
+worked for the FreeBSD project.  My project is ``Multibyte Encoding Support
+in Nvi''\cite{1}.
+
+\section{Background}
+
+\emph{Nvi} is a BSD-licensed re-implementation of the original vi editor,
+and it is frozen at version 1.79.  My project creates a nvi fork with sufficient multibyte encoding support.
+
+We consider the following multibyte encodings in this project:
+
+\begin{enumerate}
+	\item Single byte character sets, either ASCII (7-bit) or 8-bit extended
+	   	encodings, e.g., ISO8859-1, KOI8-R;
+	\item Non-Unicode two bytes character sets, mainly CJK families, e.g.,
+		GBK, SJIS;
+	\item Unicode families. UTF-8 and UTF-16.
+\end{enumerate}
+
+And the phrase ``sufficient support'' means the new \emph{nvi} is able to
+read/write/edit/display a text file with any valid encoding above. A relatively
+perfectly approach is to add the \verb|libiconv| support to nvi.\footnote{As
+	a negative example, another multibyte nvi fork, nvi-m17n, uses a homebrew
+	CJK converter,\cite{3} which is complex and limited.}
+
+The other requirements of the project include:
+
+\begin{enumerate}
+	\item The encoding settings can be changed through ex commands at the
+		runtime. By default, the input encoding obeys the locale.
+	\item It features some form of file encoding detection.
+	\item It behaviors in the original nvi-1.79 (the version presents in
+		the FreeBSD base system and mostly confirms with the POSIX
+		standard) way.
+	\item The whole software is clearly BSD licensed.\footnote{Another
+			exiting solution, nvi-devel-1.8x\cite{4} depends on DB3/4, which is not
+			BSD licensed. This is the biggest reason that it can not present
+			in the FreeBSD system.}
+\end{enumerate}
+
+\section{Project progress}
+
+My work started by cleaning up the nvi code in the FreeBSD base
+system. I read the code while trying to eliminate some warnings reported by
+the recent compilers. Since FreeBSD is be able to be compiled with
+\emph{clang},\cite{2} I use both gcc and clang in my work.
+
+During that period of time, I committed to the Subversion repository provided
+by the FreeBSD project. When I started coding the iconv part, I choose to merge
+the 1.79 code with another multibyte nvi fork, nvi-devel-1.81.6, which
+features UTF-8 and non-Unicode encoding supports with libiconv, and I found
+that the SVN is not suitable for this work, and over 100 non-compilable ``Work in
+progress'' commit emails are just spam to other FreeBSD GSoC participants. So
+I moved my project to Github.com, \url{https://github.com/lichray/nvi2}, to
+use a better source code management tool, \emph{git}.
+
+\subsection{Multibyte editing support}
+
+\emph{Nvi} is a line-oriented editor, even its internal implementation is
+line-oriented. It stores each line in a file into a DB1 database, and uses a
+pointer which points the last accessed record in the DB as the line cache.
+So, in the original nvi-1.79, a simplified file structure looks like:
+
+\fig{1-1}{exf_1}{0.5}
+
+When we want the multibyte encoding support in nvi, firstly, we want the wide
+characters can be correctly displayed. This requires the use of
+\emph{libncursesw} and \verb|wchar_t|. \verb|wchar_t| is just an 32-bit
+integer, which is be able to hold any kinds of characters. But you can not
+store any file with \verb|wchar_t|, because the file is always being stored
+with a continuous byte (\verb|char|) string. For example, two UTF-8
+characters, \verb|e4 b8 8d e9 94 99|, present as 6 bytes in a file, but as of
+\verb|wchar_t|, they are \verb|00 e4 b8 8d 00 e9 94 99| (big-endian), two
+int32, 8 bytes.
+
+So we need to carefully separate the use of \verb|char| in nvi into
+``character type for editing'' and ``character type for storage''. So the
+data in DB should still be \verb|char|, since DB is regarded as file in
+nvi; and the line cache should be \verb|wchar_t|. So line cache should point
+to somewhere else, like a dynamic conversion buffer.
+
+\fig{1-2}{exf_2}{0.5}
+
+As shown above, we point \verb|c_lp| to a dynamic growth \verb|wchar_t|
+buffer, and perform conversion between the DB and the buffer. So
+theoretically, you should be able to edit the file which matches your
+locale encoding (implied by \verb|wchar_t|) now. However, a general purpose
+solution is to perform the encoding conversion between the ``input encoding''
+and the ``file encoding``. In practical, the functions \verb|INT2FILE|
+and \verb|FILE2INT| do such thing at the same time, to ensure the encoding
+implied by \verb|c_lp| to match the users' locale.
+
+The whole framework and the conversion code, among other iconv-related patches
+are merged from nvi-devel-1.81.6. I fixed a bug in the conversion code to
+properly handle the invalid UTF-8 characters, and rewrote some DB1 and
+iconv-related code since the DB1 code from nvi-devel is incomplete and buggy.
+
+\subsection{File encoding detection}
+
+File encoding detection is a feature implemented by most of the production
+level editors\footnote{Obviously nvi-devel-1.8x is not one of them :) It has
+a serious memory leak even in its DB4 code by the way.}.
+\emph{Vim}'s encoding detection requires user to setup an option which
+contains ``all possible encodings in order``. Although the detection is very
+trustful, such a mechanism does not apply to \emph{nvi} very well, since I
+regard such an editor in a base system should be highly available, and,
+meanwhile, less customizable.
+
+The reason of using a ``possible encodings array'' is that it is impossible
+to write a working detector without a statistical analysis of byte patterns;
+a Unicode string can probably be an valid CJK string at the same time.
+However, in practical, a multibyte language user seldom edits in another
+multibyte language. So, I made the following mechanism: to detect the only
+multilingual encodings, UTF-8 and UTF-16, and to fallback to the
+locale\footnote{A locale encoding must be compatible with ASCII, i.e.,
+	no locale uses other ISO/IEC 646 variants or UTF-16; at least, it is true
+	for FreeBSD libc.} if all fail.
+
+In the first version of my file encoding detection code, I made one more
+assumption: the user only edits in his/her own language. So the detection
+only needs to try to convert some text in the file from UTF-16/UTF-8 into
+locale. If all fail, fallback to locale. But such an detection is relatively
+weak. As the second step, I ported \verb|file(1)|'s encoding detection
+code\footnote{\texttt{encoding.c}, by Ian F. Darwin, Christos Zoulas
+	and others.}. Such code detects for invalid (control characters are also
+considered invalid) UTF-8, UTF-16 characters according to their RFC documents.
+
+Then I made some changes to the detection: firstly, the UTF-8 BOM
+(Byte-order-mark) support is dropped, because UTF-8 with BOM is invalid on
+UNIX (as an encoding which is compatible with ASCII, UTF-8 should be able to
+be used to write shell scripts, but BOM prevents the shebang from being
+recognized); secondly, the UTF-8 standard RFC 3629 is being used, which
+decreased the possibility of a CJK encoding being accepted as UTF-8;
+\\
+
+\begin{tabular}{|p{1in}|l|l|}
+\hline
+binary & hex & reason \\
+\hline
+1100000x & C0, C1 & double bytes, but code point $\le 127$ \\
+\hline
+111110xx & F8, F9, FA, FB, FC, FD & 5 to 6 bytes \\
+1111110x &  & \\
+\hline
+11110101 & F5, F6, F7 & code point $>$ 10FFFF \\
+1111011x & & \\
+\hline
+\end{tabular}
+
+\begin{center}
+	\texttt{\small{Table. 1.1 Invalid UTF-8 sequence beginning as of RFC
+			3629 \cite{5}}}
+\end{center}
+
+Thirdly,
+UTF-16 detection is rewrote according to RFC 2781, so that the supplementary
+characters\cite{6} (characters encoded with 4 bytes) are properly recognized.
+
+\subsection{UTF-16 support}
+
+UTF-16 is about the only widely-used encoding which does not compatible with
+ASCII. There are two main issues when adding the UTF-16 support to nvi.
+
+\begin{itemize}
+	\item BOM. It can only be used by the encoding detection, and should not
+		bother the editing;
+	\item Line separator. UTF-16 uses \verb|000a| (big-endian) or
+		\verb|0a00| (little-endian) (\verb|'\n'| as an int16) as the line
+		separator, while nvi only recognizes \verb|'\n'|.
+\end{itemize}
+
+To handle the BOM, I added an additional field, \verb|.bom|, to the file
+structure. We read the BOM and store it during the encoding detection, then
+shift the first line by 2 bytes in the DB. Before nvi writes to the actually
+file, we write in the BOM if it exists. Since nvi never changes the encoding
+of the actual file, such a method always works.
+
+To handle the line separator problem, I hacked the \verb|FILE2INT| function,
+to make it ignore the last character (\verb|'\0'|) when processing UTF-16
+text; and I hacked the function which write in the actual file, to write in
+the additional \verb|'\0'|. But such a hack only works for UTF-16BE. I have
+another week to solve the problems left behind.
+
+\subsection{Proposed features}
+
+For the next step, if the new nvi can appear in the FreeBSD base system, I
+want to add the wide character regular expression support. Currently, the
+single byte regex's ``magic characters'' do not work over \verb|wchar_t|.
+Since GSoC2011 accepted a
+project\footnote{Replacing the old regex implementation, \url{http://wiki.freebsd.org/G\%C3\%A1borSoC2011}} porting TRE to FreeBSD, we will have a
+modern regex with I18N support in FreeBSD libc.
+
+\section{Summary}
+
+By participating the GSoC2011, I learned a lot about the character encodings,
+DB1, and debugging -- the best approach to get familiar with an unmaintained
+software quickly. Such an experience also increases my possibility to
+eventually get the zy@FreeBSD.org email address (to become a FreeBSD
+committer).
+
+Thanks to the FreeBSD project and Google.Inc for providing me such an ideal
+opportunity to work and learn at home. Thanks to my mentor, Alexander
+Leidinger, who patiently answers my questions, repeatedly informs me the
+deadlines and the status reports, and carefully teaches me how to communicate
+with others.
+
+\end{mla}
+
+\begin{thebibliography}{9}
+\bibitem{1} Yuan, Zhihao. \emph{Multibyte Encoding Support in Nvi},
+\url{https://socghop.appspot.com/gsoc/proposal/review/google/gsoc2011/zy/1},
+3 April 2011.
+
+\bibitem{2} \emph{Building FreeBSD with clang/llvm},
+\url{http://wiki.freebsd.org/BuildingFreeBSDWithClang}, FreeBSD.org, 24 July 2011.
+
+\bibitem{3} Jun-ichiro itojun Hagino and Yoshitaka Tokugawa.
+\emph{Multilingual vi clones: past, now and the future},
+\url{http://www.usenix.org/events/usenix99/full_papers/hagino/hagino.ps}.
+
+\bibitem{4} Nvi-devel project page on freshmeat.net,
+\url{http://freshmeat.net/projects/nvi/}.
+
+\bibitem{5} \emph{UTF-8, a transformation format of ISO 10646: Syntax of
+	UTF-8 Byte Sequences},
+\url{https://tools.ietf.org/html/rfc3629#section-4}. Network Working Group, November 2003.
+
+\bibitem{6} \emph{Unicode FAQ: What is the difference between UCS-2 and
+	UTF-16?}, \url{http://www.unicode.org/faq/basic_q.html#14}. Unicode.org,
+15 April 2011.
+
+\end{thebibliography}
+
+\end{document}
